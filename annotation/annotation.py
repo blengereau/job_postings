@@ -1,5 +1,5 @@
 """
-PHASE 1 — Annotation LLM pour détection de features dans les offres d'emploi
+Détection de features dans les offres d'emploi
 =============================================================================
 Pipeline :
   1. Échantillonnage stratifié par domaine ROME (1ère lettre du code ROME)
@@ -8,24 +8,17 @@ Pipeline :
   4. Rapport QC post-annotation
 
 Features détectées (binaire 0/1) :
-  - career_progression    : évolution, formation, promotion
-  - company_culture       : valeurs, ambiance, diversité, bien-être
-  - non_salary_benefits   : tickets-restaurant, mutuelle, CE, transport, congé maternité, sport
-  - work_meaning_impact   : sens, impact social/environnemental, mission
-  - schedule_flexibility  : télétravail, horaires flexibles, autonomie
-
-Usage :
-  export OPENAI_API_KEY="sk-..."
-
-  python phase1_annotation_openai.py \
-      --input data/JOCAS/jocas_clean.parquet \
-      --output data/annotation/ \
-      --n 100
-
-Options utiles :
-  --api-key YOUR_KEY          # sinon variable OPENAI_API_KEY
-  --model gpt-5.4-nano        # moins cher pour classification/extraction simple
-  --model gpt-5.4-mini        # défaut : meilleur compromis qualité/coût
+  - remote_work                   : télétravail possible
+  - schedule_flexibility          : flexibilité dans le choix des horaires, hors télétravail
+  - on_the_job_training           : formation/accompagnement reçu dans l'emploi
+  - internal_career_progression   : évolution interne, promotion, mobilité
+  - non_salary_benefits           : tickets-restaurant, mutuelle, CE, transport, congé maternité, sport
+  - company_culture               : culture, ambiance, diversité, bien-être
+  - work_meaning_impact           : sens, impact social/environnemental, mission
+  - junior_offer                  : alternance, jeune diplômé, débutant, < 2 ans
+  - experienced_offer             : expérience requise > 2 ans
+  - manager_offer                 : leadership/management avec au moins 5 ans d'expérience
+  - seniority_unclear             : niveau junior/expérimenté/manager impossible à catégoriser
 """
 
 import argparse
@@ -39,74 +32,150 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-
-try:
-    from openai import (
-        APIConnectionError,
-        APIError,
-        APITimeoutError,
-        OpenAI,
-        RateLimitError,
-    )
-except ImportError as exc:
-    raise ImportError(
-        "SDK OpenAI manquant ou trop ancien. Installe-le avec : "
-        "pip install --upgrade openai"
-    ) from exc
-    
+from openai import (
+    APIConnectionError,
+    APIError,
+    APITimeoutError,
+    OpenAI,
+    RateLimitError,
+)
 from dotenv import load_dotenv
 load_dotenv()
 
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
-
-FEATURES = [
-    "career_progression",
+# 11 labels
+FEATURES = [ 
+    "remote_work",
+    "schedule_flexibility",
+    "on_the_job_training",
+    "internal_career_progression",
     "company_culture",
     "non_salary_benefits",
     "work_meaning_impact",
-    "schedule_flexibility",
+    "junior_offer",
+    "experienced_offer",
+    "very_experienced_offer",
+    "manager_offer",
+    "programming_skills", # développement logiciels , code
+    "communication_skills", # communication rédiger
+    "creativity_skills", # innover créer
+    "analysis_skills", # skills analytiques
 ]
 
 # Descriptions injectées dans le prompt pour guider le LLM
 FEATURE_DEFINITIONS = {
-    "career_progression": (
-        "Mentions explicites de progression de carrière, évolution professionnelle, "
-        "formation continue, montée en compétences, plan de carrière, promotions internes."
-    ),
-    "company_culture": (
-        "Mentions de culture d'entreprise, valeurs organisationnelles, ambiance de travail, "
-        "cohésion d'équipe, diversité et inclusion, bien-être au travail, engagement des employés."
-    ),
-    "non_salary_benefits": (
-        "Mentions d'avantages non salariaux : tickets-restaurant, mutuelle/prévoyance, "
-        "intéressement/participation, comité d'entreprise, voiture de fonction, "
-        "remboursement transport, RTT supplémentaires, crèche, salle de sport, etc."
-    ),
-    "work_meaning_impact": (
-        "Mentions du sens du travail, de l'impact social ou environnemental du poste, "
-        "de la mission de l'entreprise, de l'utilité ou de la contribution à un projet porteur de sens."
+    "remote_work": (
+        "Label 1 uniquement si l'offre mentionne explicitement que le télétravail est possible pour le poste : "
+        "télétravail, remote, hybride, travail à distance, home office, jours de télétravail, poste partiellement à distance. "
+        "Mettre 0 si le texte mentionne seulement autonomie, mobilité, déplacements, flexibilité, ou outils numériques sans possibilité explicite de télétravail. "
+        "Mettre 0 si le télétravail concerne l'entreprise en général mais pas le poste proposé. "
+        "Mettre 0 si l'offre indique explicitement que le poste est sur site, présentiel ou non télétravaillable."
     ),
     "schedule_flexibility": (
-        "Mentions de flexibilité des horaires, télétravail, travail à distance, "
-        "horaires aménagés ou variables, autonomie dans l'organisation du temps de travail."
+        "Label 1 uniquement si l'offre mentionne explicitement une flexibilité dans le choix ou l'organisation des horaires de travail : "
+        "horaires flexibles, horaires aménageables, choix des horaires, liberté d'organisation du temps, planning adaptable, souplesse horaire. "
+        "Ne pas inclure le télétravail ici : si l'offre mentionne seulement du télétravail sans flexibilité horaire, mettre schedule_flexibility = 0 et remote_work = 1. "
+        "Mettre 0 si les horaires sont fixes ou imposés, même s'ils sont détaillés : 2x8, 3x8, horaires de nuit, 6h-14h, 8h-17h, shifts, planning défini, astreintes, heures supplémentaires, travail le week-end. "
+        "Mettre 0 pour temps partiel, mi-temps, forfait jour ou autonomie si le texte ne dit pas clairement que le candidat peut choisir ou adapter ses horaires. "
+        "Mettre 0 si la flexibilité concerne la gestion de projets, les délais, la polyvalence ou l'adaptabilité attendue du candidat."
     ),
+    "on_the_job_training": (
+        "Label 1 uniquement si l'offre mentionne une formation, certification, parcours d'intégration, accompagnement ou montée en compétences offert au candidat dans le cadre du poste. "
+        "Exemples valides : formation interne, formation à la prise de poste, parcours d'intégration, tutorat, mentorat, accompagnement, certification financée, montée en compétences. "
+        "Ne pas mettre 1 si la formation est seulement une compétence ou un diplôme requis. "
+        "Ne pas mettre 1 si le candidat doit former, encadrer ou accompagner d'autres personnes : c'est une mission du poste, pas une formation reçue. "
+        "Ne pas mettre 1 pour les mentions générales d'un cabinet de recrutement ou d'un organisme qui accompagne ses candidats, sauf si l'avantage est clairement rattaché au poste proposé. "
+        "Ne pas mettre 1 pour l'évolution de carrière sans mention de formation ou d'apprentissage reçu : cela relève de internal_career_progression."
+    ),
+    
+    "internal_career_progression": (
+        "Label 1 uniquement si l'offre mentionne une possibilité concrète d'évolution dans l'entreprise ou le groupe : promotion, évolution hiérarchique, mobilité interne, passerelle vers d'autres postes, parcours de carrière, prise de responsabilités future. "
+        "Ne pas mettre 1 si le texte mentionne seulement des missions responsabilisantes, un poste stimulant, une entreprise en croissance, ou des projets intéressants. "
+        "Ne pas mettre 1 si l'évolution concerne des tiers, des clients, des élèves, des bénéficiaires, ou l'activité générale d'un cabinet de recrutement. "
+        "Ne pas mettre 1 si le texte mentionne uniquement de la formation ou de la montée en compétences sans perspective d'évolution de poste ou de carrière : cela relève de on_the_job_training."
+    ),
+    
+    # "career_progression": (
+    #     "Label 1 uniquement si l'offre indique que le poste offre au candidat une opportunité concrète de développement professionnel : "
+    #     "formation reçue par le candidat, certification, montée en compétences, "
+    #     "accompagnement à la prise de poste, évolution de carrière, mobilité interne, promotion, parcours d'évolution lié au poste. "
+    #     "Mettre 0 si le texte mentionne seulement les compétences requises, le diplôme attendu, l'expérience souhaitée, "
+    #     "les qualités du candidat, des missions responsabilisantes, un métier stimulant ou des projets intéressants. "
+    #     "Mettre 0 si le candidat doit former, accompagner ou sensibiliser d'autres personnes : c'est une mission du poste. "
+    #     "Mettre 0 si la phrase décrit l'activité d'un cabinet de recrutement ou un service général de suivi de carrière. Par exemple mettre 0 "
+    #     "si l'offre fait mention d'un cabinet de recrutement qui propose un suivi de carrière personnalisé."
+        
+    #     "Mettre 0 si la progression concerne des tiers (clients d'un cabinet de recrutements, enfants, élèves). "
+    #     "Mettre 0 si l'information est générale et non spécifique au poste (ex : 'nous accompagnons nos candidats dans leur carrière')."
+    # ),
+    "company_culture": (
+        "Label 1 uniquement si l'offre décrit explicitement l'environnement de travail du poste proposé au candidat : "
+        "culture d'entreprise vécue, ambiance de travail, esprit d'équipe, convivialité, collaboration, bienveillance, "
+        "diversité et inclusion, environnement motivant, etc... "
+        "Ne pas mettre 1 si le texte décrit uniquement l'entreprise de manière générale (présentation institutionnelle, marketing)."
+        "Ne pas mettre 1 si l'annonce décrit seulement pour les qualités attendues du candidat : autonomie, rigueur, curiosité, etc "
+        "Ne pas mettre 1 pour une description simple de la taille de l'équipe, de l'entreprise."
+    ),
+    "non_salary_benefits": (
+        "Label 1 uniquement si l'offre mentionne un avantage matériel concret qui s'ajoute à la rémunération directe. Exemples valides : tickets ou carte restaurant"
+        "mutuelle, RTT, CSE/CE, chèques vacances, prise en charge transport, voiture de fonction, véhicule de service utilisable,"
+        "crèche, salle de sport, logement, aide au déménagement, avantages sociaux clairement identifiés. "
+        "Ne pas mettre 1 pour les mentions de salaire, rémunération, primes, bonus, commissions, variables, pourcentage du chiffre d'affaires, "
+        "13e mois, package salarial ou rémunération attractive : ce sont des éléments de rémunération, pas des avantages non salariaux. "
+        "Ne pas inclure le télétravail ici : il est annoté séparément dans remote_work. "
+        "Ne pas mettre 1 pour formation, certification, parcours d'intégration, accompagnement, évolution de carrière, projets stimulants, "
+        "équipe dynamique, ambiance conviviale, environnement de travail, autonomie, responsabilités ou section intitulée 'Nos avantages' si aucun avantage matériel/social concret n'est mentionné. "
+    ),
+    "work_meaning_impact": (
+        "Label 1 uniquement si l'offre mentionne explicitement le sens, l'utilité ou l'impact du travail : "
+        "impact social, impact environnemental, mission d'intérêt général, contribution à la société, transition écologique, "
+        "inclusion, santé, éducation, service public, aide aux personnes, projet porteur de sens ou utilité sociale claire. "
+        "Ne pas mettre 1 pour une simple description du produit, de l'activité commerciale, de la croissance de l'entreprise "
+        "ou du fait de servir des clients, sauf si le texte affirme clairement une finalité sociale, environnementale."
+    ),
+    "junior_offer": (
+        "Label 1 uniquement si l'offre cible explicitement un profil junior, débutant ou sans expérience professionnelle requise : "
+        "alternance, apprentissage, stage, jeune diplômé, premier emploi, débutant accepté, profil junior, aucune expérience requise, première expérience acceptée. "
+        "Mettre 1 si l'offre indique 0 à 2 ans d'expérience maximum, ou si elle indique clairement que les débutants sont acceptés. "
+        "Mettre 0 si l'offre demande clairement une expérience professionnelle préalable dans un poste, métier, secteur ou fonction similaire. "
+        "Mettre 0 si l'expérience est présentée comme nécessaire, même si la durée n'est pas précisée. "
+    ),
+    "experienced_offer": (
+        "Label 1 uniquement si l'offre requiert explicitement une expérience professionnelle préalable dans un poste, métier, secteur ou fonction similaire. "
+        "Exemples valides : expérience requise, expérience exigée, expérience réussie, expérience confirmée, expérience significative, solide expérience, expérience sur un poste similaire, première expérience dans le métier ou le secteur, plusieurs années d'expérience, 2 ans d'expérience ou plus. "
+        "Mettre 1 même si l'offre demande un profil très expérimenté ou senior : dans ce cas very_experienced_offer peut aussi valoir 1. "
+        "Mettre 0 si l'offre indique débutant accepté, alternance, stage, jeune diplômé, premier emploi, aucune expérience requise, première expérience acceptée ou 0 à 2 ans d'expérience maximum. "
+        "Ne pas mettre 1 si l'expérience est seulement souhaitée, optionnelle, vague ou non discriminante, par exemple : 'une première expérience serait un plus'"
+    ),
+    "very_experienced_offer": (
+        "Label 1 uniquement si l'offre requiert explicitement un profil très expérimenté, très senior ou de haut niveau. "
+        "Exemples valides : au moins 10 ans d'expérience dans le secteur ou dans un poste similaire, profil très senior, expert confirmé, partner, associé, directeur, cadre dirigeant, leadership stratégique, pilotage d'une direction. "
+        "Mettre 1 seulement si le texte indique clairement un niveau d'expérience ou de séniorité supérieur à une simple expérience professionnelle. "
+        "Mettre 0 pour une simple demande d'expérience, même de plusieurs années, si elle ne signale pas un niveau très senior. "
+        "Mettre 0 si le texte mentionne seulement 3 à 5 ans d'expérience, ou une expérience significative sans signal explicite de très forte séniorité. "
+        "Si very_experienced_offer = 1, alors experienced_offer doit aussi valoir 1."
+    ),
+    "manager_offer": (
+        "Label 1 uniquement si l'offre correspond clairement à un poste avec responsabilités de management, leadership ou encadrement d'équipe. "
+        "Exemples valides : manager une équipe, encadrer des collaborateurs, superviser une équipe, responsabilité hiérarchique, animation d'équipe, coordination / pilotage / leadership d'équipe. "
+        "Mettre 1 si le poste implique une responsabilité managériale claire, même si aucune durée d'expérience n'est indiquée. "
+        "Mettre 0 si le candidat doit seulement gérer des projets, des clients, des dossiers sans encadrement clair d'équipe. "
+        "Ce label est indépendant des labels de séniorité et ne regarde que la qualité managériales du poste. "
+    )
 }
 
-# Modèle OpenAI par défaut : bon compromis qualité/coût pour annotation en batch.
-ANNOTATION_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
+ANNOTATION_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4")
 BATCH_SIZE = 5            # offres par appel API
 CHECKPOINT_EVERY = 50     # sauvegarder tous les N batches
 MAX_RETRIES = 3           # tentatives en cas d'erreur API ou parsing
 RETRY_DELAY = 5           # secondes entre tentatives
-MAX_TEXT_CHARS = 3000     # tronquer les offres trop longues (économise des tokens)
-MAX_OUTPUT_TOKENS = 2000  # marge confortable pour 5 annotations JSON
+MAX_TEXT_CHARS = 5000     # tronquer les offres trop longues (économise des tokens)
+MAX_OUTPUT_TOKENS = 3500  
 
 
-# ─────────────────────────────────────────────
 # 1. STRATIFIED SAMPLING
-# ─────────────────────────────────────────────
 
 def extract_rome_domain(code: str) -> str:
     """
@@ -121,7 +190,7 @@ def extract_rome_domain(code: str) -> str:
 def stratified_sample(
     df: pd.DataFrame,
     n: int,
-    text_col: str = "description_clean",
+    text_col: str = "description",
     rome_col: str = "job_ROME_code",
     min_text_len: int = 100,
     random_state: int = 42,
@@ -214,9 +283,7 @@ def stratified_sample(
     return result
 
 
-# ─────────────────────────────────────────────
 # 2. PROMPT D'ANNOTATION + SCHÉMA JSON
-# ─────────────────────────────────────────────
 
 SYSTEM_PROMPT = """Tu es un assistant expert en analyse d'offres d'emploi françaises.
 Ta tâche est d'annoter des offres d'emploi selon des critères précis.
@@ -289,7 +356,7 @@ def build_annotation_prompt(offers: list[dict]) -> str:
         offers_block += f"\n--- OFFRE {i} (id: {offer['id']}) ---\n{text}\n"
 
     prompt = f"""Analyse les offres d'emploi ci-dessous et détermine, pour chacune,
-si les éléments suivants sont MENTIONNÉS (même implicitement) dans le texte.
+si les éléments suivants sont clairement MENTIONNÉS dans le texte.
 
 ## Définitions des features à détecter
 
@@ -297,11 +364,27 @@ si les éléments suivants sont MENTIONNÉS (même implicitement) dans le texte.
 
 ## Règles d'annotation
 
-- Label **1** = l'élément est mentionné explicitement ou clairement implicitement.
+- Label **1** = l'offre contient une preuve textuelle précise correspondant strictement à la définition du label.
+- Si la preuve textuelle ne pourrait pas être citée mot pour mot, mets 0.
+- Ne mets pas 1 à partir d'un simple ton positif, d'une section intitulée "Nos avantages", ou d'une supposition.
 - Label **0** = l'élément n'est pas mentionné ou est trop vague pour être certain.
 - Sois conservateur : en cas de doute, mets 0.
 - Ne te base QUE sur le texte fourni, pas sur des suppositions sur l'entreprise.
 - Retourne exactement une annotation par offre, en reprenant l'id exact fourni.
+- Un titre de section ne suffit jamais à mettre un label à 1. Par exemple, une section "Nos avantages" ne justifie pas non_salary_benefits si elle ne liste pas un avantage matériel/social concret.
+- Ne pas annoter comme avantage du poste les descriptions générales d'un cabinet de recrutement, de son activité ou de son accompagnement des candidats.
+- Pour chaque label, vérifier que l'information concerne le candidat et le poste proposé. Si l'information concerne des tiers (clients, enfants, élèves, entreprise en général), ne pas attribuer le label.
+- Pour chaque label, demander : "Est-ce que cette information décrit concrètement ce que vivra le candidat dans ce poste ?" Si non,  mets 0.
+
+Pour les labels de séniorité :
+- junior_offer et experienced_offer sont mutuellement exclusifs.
+- Une offre ne peut pas avoir junior_offer = 1 et experienced_offer = 1 en même temps.
+- Si l'offre ne donne aucune information claire sur l'expérience requise, laisser junior_offer = 0 et experienced_offer = 0. Ne pas créer de label positif à partir d'une simple absence d'information.
+
+Pour very_experienced_offer :
+- very_experienced_offer est un sous-label de experienced_offer.
+- Si very_experienced_offer = 1, alors experienced_offer doit aussi valoir 1.
+- very_experienced_offer ne doit jamais valoir 1 si experienced_offer = 0.
 
 ## Offres à annoter
 
@@ -316,9 +399,7 @@ Chaque label doit valoir 0 ou 1.
     return prompt
 
 
-# ─────────────────────────────────────────────
 # 3. ANNOTATION PIPELINE
-# ─────────────────────────────────────────────
 
 def parse_annotation_response(response_text: str, expected_ids: list[str]) -> list[dict] | None:
     """
@@ -470,7 +551,7 @@ def run_annotation_pipeline(
     df_sample: pd.DataFrame,
     client: OpenAI,
     output_dir: Path,
-    text_col: str = "description_clean",
+    text_col: str = "description",
     id_col: str | None = None,
     checkpoint_every: int = CHECKPOINT_EVERY,
 ) -> pd.DataFrame:
@@ -644,41 +725,31 @@ def print_qc_report(df: pd.DataFrame) -> None:
     print("\n" + "=" * 60)
 
 
-# ─────────────────────────────────────────────
 # 5. ENTRY POINT
-# ─────────────────────────────────────────────
-
 def main() -> None:
     global ANNOTATION_MODEL
-    parser = argparse.ArgumentParser(description="Phase 1 : annotation LLM des offres d'emploi via OpenAI")
-    parser.add_argument("--input", required=True, help="Chemin vers le parquet source")
-    parser.add_argument("--output", default="data/annotation/", help="Dossier de sortie")
-    parser.add_argument("--n", type=int, default=100, help="Nombre d'offres à annoter")
-    parser.add_argument("--text-col", default="description", help="Colonne texte")
-    parser.add_argument("--rome-col", default="job_ROME_code", help="Colonne code ROME")
-    parser.add_argument("--api-key", default=None, help="Clé API OpenAI (ou variable OPENAI_API_KEY)")
-    parser.add_argument("--model", default=ANNOTATION_MODEL, help="Modèle OpenAI à utiliser")
-    parser.add_argument("--seed", type=int, default=42, help="Graine aléatoire")
+    parser = argparse.ArgumentParser(description="Pipeline d'annotation de données")
+    parser.add_argument("--input", type=str, required=True)
+    parser.add_argument("--output", default="data/annotation/")
+    parser.add_argument("--n", type=int, default=50)
+    parser.add_argument("--text-col", default="description")
+    parser.add_argument("--rome-col", default="job_ROME_code")
+    parser.add_argument("--api-key", default=None)
+    parser.add_argument("--model", default=ANNOTATION_MODEL)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     ANNOTATION_MODEL = args.model
 
-    # ── Init client OpenAI
     api_key = args.api_key or os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise EnvironmentError(
-            "Clé API manquante. Passe --api-key ou définis la variable OPENAI_API_KEY."
-        )
     client = OpenAI(api_key=api_key)
-    print(f"🔑 Client OpenAI initialisé — modèle : {ANNOTATION_MODEL}")
+    print(f"Client OpenAI initialisé — modèle : {ANNOTATION_MODEL}")
 
-    # ── Charger les données
-    print(f"📂 Chargement de {args.input}...")
+    print(f"Chargement de {args.input}...")
     df = pd.read_parquet(args.input)
     print(f"   {len(df):,} offres chargées")
 
-    # ── Échantillonnage stratifié
-    print(f"\n🎯 Échantillonnage de {args.n} offres (stratifié par domaine ROME)...")
+    print(f"Échantillonnage de {args.n} offres (stratifié par domaine ROME)...")
     df_sample = stratified_sample(
         df,
         n=args.n,
@@ -686,16 +757,12 @@ def main() -> None:
         rome_col=args.rome_col,
         random_state=args.seed,
     )
-
-    # ── Annotation
     df_labeled = run_annotation_pipeline(
         df_sample=df_sample,
         client=client,
         output_dir=Path(args.output),
         text_col=args.text_col,
     )
-
-    # ── Rapport QC
     print_qc_report(df_labeled)
 
     final_output = Path(args.output) / "training_set_labeled.parquet"
