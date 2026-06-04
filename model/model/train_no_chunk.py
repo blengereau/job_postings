@@ -45,11 +45,23 @@ OUTPUT_DIR = "models/moderncamembert_job_features_full_text"
 TEXT_COL = "description"
 
 LABELS = [
-    "career_progression",
+    "remote_work",
+    "schedule_flexibility",
+    "on_the_job_training",
+    "internal_career_progression",
     "company_culture",
     "non_salary_benefits",
     "work_meaning_impact",
-    "schedule_flexibility",
+    "junior_offer",
+    "experienced_offer",
+    "very_experienced_offer",
+    "management",
+    "programming_skills",
+    "communication_skills",
+    "creativity_skills",
+    "analytical_skills",
+    "interpersonal_skills",
+    "manual_skills",
 ]
 
 MAX_LENGTH = 1024
@@ -65,7 +77,7 @@ PER_DEVICE_EVAL_BATCH_SIZE = 8
 GRADIENT_ACCUMULATION_STEPS = 4
 
 USE_GRADIENT_CHECKPOINTING = True
-USE_POS_WEIGHT = False
+USE_POS_WEIGHT = True
 MIN_PRECISION_FOR_THRESHOLDS = None
 
 TOKENIZE_BATCH_SIZE = 16
