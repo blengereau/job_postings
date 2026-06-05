@@ -39,8 +39,8 @@ except ImportError:
 # CONFIG
 
 MODEL_NAME = "almanach/moderncamembert-base"
-INPUT_PATH = "data/annotation/annoted_set.parquet"
-OUTPUT_DIR = "models/moderncamembert_job_features_full_text"
+INPUT_PATH = "data/annotation/annoted_set_17_labels.parquet"
+OUTPUT_DIR = "models/moderncamembert_job_features_17_labels"
 
 TEXT_COL = "description"
 

@@ -45,23 +45,25 @@ load_dotenv()
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
-# 11 labels
+# 17 labels
 FEATURES = [ 
-    "remote_work",
-    "schedule_flexibility",
-    "on_the_job_training",
-    "internal_career_progression",
-    "company_culture",
-    "non_salary_benefits",
-    "work_meaning_impact",
-    "junior_offer",
-    "experienced_offer",
-    "very_experienced_offer",
-    "manager_offer",
-    "programming_skills", # développement logiciels , code
-    "communication_skills", # communication rédiger
-    "creativity_skills", # innover créer
-    "analysis_skills", # skills analytiques
+    "remote_work",                  # télétravail ou non
+    "schedule_flexibility",         # flexibilité dans le choix des horaires
+    "on_the_job_training",          # formation au travail
+    "internal_career_progression",  # possibilité de carrière au sein de l'entreprise
+    "company_culture",              # culture d'entreprise mise en avant
+    "non_salary_benefits",          # avantages non salariaux
+    "work_meaning_impact",          # sens / utilité du travail mise en avant
+    "junior_offer",                 # recrute un junior
+    "experienced_offer",            # recrute un expérimenté
+    "very_experienced_offer",       # recrute un profil très sénior
+    "management",                   # poste de management d'équipe
+    "programming_skills",           # skills de développement logiciel, code
+    "communication_skills",         # skills oral, écrit, présentation
+    "creativity_skills",            # skills créatifs, innovants
+    "analytical_skills",            # skills analytiques, solutions de problèmes
+    "interpersonal_skills",         # skills de travail en équipe, négociation    
+    "manual_skills",                # skills physiques, travail artisanal
 ]
 
 # Descriptions injectées dans le prompt pour guider le LLM
@@ -134,6 +136,8 @@ FEATURE_DEFINITIONS = {
         "inclusion, santé, éducation, service public, aide aux personnes, projet porteur de sens ou utilité sociale claire. "
         "Ne pas mettre 1 pour une simple description du produit, de l'activité commerciale, de la croissance de l'entreprise "
         "ou du fait de servir des clients, sauf si le texte affirme clairement une finalité sociale, environnementale."
+        "Ne pas mettre 1si le texte décrit seulement le secteur d'activité, par exemple santé, éducation, service public, sécurité sociale, environnement, énergie, handicap ou associatif, sans formuler explicitement l'impact ou l'utilité du poste. "
+        "Ne pas mettre 1 si l'impact est seulement une déclaration institutionnelle générale de l'entreprise, une politique RSE, diversité/inclusion ou une phrase de marque employeur sans lien clair avec les missions du candidat. "
     ),
     "junior_offer": (
         "Label 1 uniquement si l'offre cible explicitement un profil junior, débutant ou sans expérience professionnelle requise : "
@@ -157,13 +161,56 @@ FEATURE_DEFINITIONS = {
         "Mettre 0 si le texte mentionne seulement 3 à 5 ans d'expérience, ou une expérience significative sans signal explicite de très forte séniorité. "
         "Si very_experienced_offer = 1, alors experienced_offer doit aussi valoir 1."
     ),
-    "manager_offer": (
+    "management": (
         "Label 1 uniquement si l'offre correspond clairement à un poste avec responsabilités de management, leadership ou encadrement d'équipe. "
         "Exemples valides : manager une équipe, encadrer des collaborateurs, superviser une équipe, responsabilité hiérarchique, animation d'équipe, coordination / pilotage / leadership d'équipe. "
         "Mettre 1 si le poste implique une responsabilité managériale claire, même si aucune durée d'expérience n'est indiquée. "
         "Mettre 0 si le candidat doit seulement gérer des projets, des clients, des dossiers sans encadrement clair d'équipe. "
         "Ce label est indépendant des labels de séniorité et ne regarde que la qualité managériales du poste. "
-    )
+    ),
+    
+    "programming_skills": (
+        "Label 1 uniquement si l'offre demande explicitement des compétences de programmation, développement logiciel, scripting, data engineering ou manipulation technique de code. "
+        "Mettre 1 si le candidat doit développer, coder, maintenir du code, automatiser des traitements ou manipuler des bases de données par des requêtes techniques. "
+        "Mettre 0 si l'offre mentionne seulement l'utilisation d'outils numériques, bureautiques, CRM, ERP, logiciels métiers, Excel simple, Pack Office, outils collaboratifs ou plateformes sans programmation explicite. "
+        "Mettre 0 si le texte mentionne des logiciels ou technologies comme objets de vente, produits de l'entreprise ou environnement général, sans que la compétence soit demandée au candidat."
+    ),
+
+    "communication_skills": (
+        "Label 1 uniquement si l'offre demande explicitement des compétences de communication orale, écrite, rédactionnelle, présentation, argumentation ou reporting auprès d'interlocuteurs. "
+        "Mettre 1 si le candidat doit communiquer avec des clients, partenaires, équipes internes, direction ou utilisateurs et que cette compétence est explicitement demandée. "
+        "Mettre 0 si l'offre mentionne seulement que le poste est en contact avec des personnes sans exiger explicitement une compétence de communication. "
+        "Mettre 0 pour la simple maîtrise d'une langue étrangère si aucune compétence de communication, rédaction, relation client ou présentation n'est demandée."
+    ),
+    
+    "creativity_skills": (
+        "Label 1 uniquement si l'offre demande explicitement des compétences de créativité, innovation, conception, idéation, design ou capacité à proposer des idées nouvelles. "
+        "Mettre 1 si le candidat doit créer, concevoir, imaginer, innover ou proposer des solutions originales dans le cadre du poste. "
+        "Mettre 0 si l'offre décrit l'entreprise comme innovante ou créative sans demander cette compétence au candidat. "
+    ),
+
+    "analytical_skills": (
+        "Label 1 uniquement si l'offre demande explicitement des compétences d'analyse, résolution de problèmes, diagnostic, interprétation de données, raisonnement quantitatif ou prise de décision fondée sur des informations. "
+        "Exemples valides : esprit d'analyse, capacité d'analyse, esprit de synthèse, résolution de problèmes, diagnostic, analyse de données, reporting analytique, statistiques, modélisation, études, KPI, tableaux de bord, business analysis, analyse financière, analyse de performance, optimisation. "
+        "Mettre 1 si le candidat doit analyser des données, des indicateurs, des situations complexes, des problèmes techniques ou économiques pour proposer des conclusions ou décisions. "
+        "Mettre 0 si l'offre mentionne seulement rigueur, organisation, attention au détail ou suivi administratif sans analyse explicite. "
+    ),
+    
+    "interpersonal_skills": (
+        "Label 1 uniquement si l'offre demande explicitement des compétences relationnelles ou sociales dans le travail : travail en équipe, collaboration, négociation, empathie, diplomatie, sens du service, gestion de conflits. "
+        "Mettre 1 si l'offre demande au candidat d'interagir efficacement avec des collègues, clients, partenaires, usagers, patients, fournisseurs ou équipes. "
+        "Mettre 0 si le texte décrit seulement une équipe agréable ou collaborative comme environnement de travail, sans demander cette compétence au candidat. "
+    ),
+
+    "manual_skills": (
+        "Label 1 uniquement si l'offre demande explicitement des compétences manuelles, physiques, artisanales, techniques de terrain ou d'utilisation d'outils/machines. "
+        "Mettre 1 si le poste implique concrètement un travail physique, manuel, artisanal, industriel, de maintenance, de production, de conduite ou d'intervention terrain. "
+        "Ne pas mettre 1 si le poste est principalement informatique, administratif, commercial, relationnel, analytique ou de gestion, même s'il mentionne des outils, systèmes, équipements, logiciels, serveurs ou postes de travail. "
+        "Ne pas mettre 1 pour l'installation, la configuration, l'administration, le diagnostic ou la maintenance d'équipements informatiques si le texte ne mentionne pas clairement une intervention physique/manuelle sur le matériel. "
+    ),
+    
+    
+    
 }
 
 ANNOTATION_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4")
@@ -385,6 +432,12 @@ Pour very_experienced_offer :
 - very_experienced_offer est un sous-label de experienced_offer.
 - Si very_experienced_offer = 1, alors experienced_offer doit aussi valoir 1.
 - very_experienced_offer ne doit jamais valoir 1 si experienced_offer = 0.
+
+Pour les labels de skills :
+- Label 1 uniquement si la compétence est demandée au candidat ou clairement nécessaire dans ses missions.
+- Ne pas mettre 1 si le mot apparaît seulement dans la description de l'entreprise, du produit, du secteur ou des clients.
+- Ne pas mettre 1 si la compétence concerne d'autres personnes que le candidat.
+- Une même offre peut avoir plusieurs ou pas de skills à 1 .
 
 ## Offres à annoter
 
